@@ -50,23 +50,54 @@ const DiagnosisWizard = () => {
     };
 
     const handleSubmit = async () => {
+        if (!selectedPatient) {
+            alert("Please select a patient first.");
+            setStep(1);
+            return;
+        }
+
         setLoading(true);
         const formData = new FormData();
         formData.append('patient_id', selectedPatient.id);
         formData.append('symptoms', JSON.stringify(symptoms));
         formData.append('vitals', JSON.stringify(vitals));
-        if (xrayFile) formData.append('file', xrayFile);
+
+        // Only append file if it exists
+        if (xrayFile) {
+            formData.append('file', xrayFile);
+        }
 
         try {
-            const { data } = await api.post('/diagnose', formData);
+            const { data } = await api.post('/diagnose', formData, {
+                headers: {
+                    'Content-Type': 'multipart/form-data',
+                },
+            });
             // Navigate to results page with the response data
             navigate('/dashboard/results', { state: { result: data, patient: selectedPatient } });
         } catch (error) {
             console.error("Diagnosis failed", error);
-            alert("Analysis failed. Please try again.");
+
+            let message = "Analysis failed. Please try again.";
+
+            if (error.response?.data?.detail) {
+                const detail = error.response.data.detail;
+                if (Array.isArray(detail)) {
+                    message = detail.map(d => d.msg || JSON.stringify(d)).join("\n");
+                } else if (typeof detail === "string") {
+                    message = detail;
+                } else if (typeof detail === "object") {
+                    message = JSON.stringify(detail);
+                }
+            } else if (error.message) {
+                message = error.message;
+            }
+
+            alert(message);
             setLoading(false);
         }
     };
+
 
     // --- RENDER STEPS ---
 
@@ -175,7 +206,8 @@ const DiagnosisWizard = () => {
                 ) : (
                     <label className="cursor-pointer block">
                         <UploadCloud className="h-12 w-12 text-slate-400 mx-auto mb-4" />
-                        <span className="text-lg font-medium text-slate-700 block">Click to upload X-Ray Image</span>
+                        <span className="text-lg font-medium text-slate-700 block">Click to upload X-Ray Image (Optional)</span>
+
                         <span className="text-sm text-slate-500">Supports JPG, PNG, DICOM</span>
                         <input type="file" onChange={handleFileChange} className="hidden" accept="image/*" />
                     </label>
@@ -184,7 +216,7 @@ const DiagnosisWizard = () => {
             <div className="flex justify-between pt-4">
                 <button onClick={() => setStep(3)} className="text-slate-500 hover:text-slate-900">Back</button>
                 <button onClick={handleSubmit} disabled={loading} className="btn-primary bg-gradient-to-r from-medical-600 to-teal-500 border-0 flex items-center gap-2 px-8">
-                    {loading ? 'Analyzing...' : <>Run AI Analysis <Activity className="h-4 w-4" /></>}
+                    {loading ? 'Analyzing...' : 'Run AI Analysis'}
                 </button>
             </div>
         </div>

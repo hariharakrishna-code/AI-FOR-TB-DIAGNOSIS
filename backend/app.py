@@ -2,9 +2,14 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends, sta
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from pydantic import BaseModel
 import shutil
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 import base64
 import json
 import logging
@@ -151,6 +156,38 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
 def read_users_me(current_user: database.User = Depends(get_current_user)):
     return current_user
 
+# 1.5 Dashboard Stats
+@app.get("/api/stats")
+def get_stats(db: Session = Depends(get_db), current_user: database.User = Depends(get_current_user)):
+    total_patients = db.query(database.Patient).count()
+    high_risk = db.query(database.Diagnosis).filter(database.Diagnosis.risk_level == "High").count()
+    
+    today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    completed_today = db.query(database.Diagnosis).filter(database.Diagnosis.created_at >= today_start).count()
+    
+    # Get recent diagnoses with patient info
+    recent = db.query(database.Diagnosis, database.Patient)\
+               .join(database.Patient)\
+               .order_by(database.Diagnosis.created_at.desc())\
+               .limit(5).all()
+               
+    recent_list = []
+    for diag, patient in recent:
+        recent_list.append({
+            "id": diag.id,
+            "patient_name": patient.full_name,
+            "risk_level": diag.risk_level,
+            "timestamp": diag.created_at.isoformat(),
+            "confidence": diag.confidence_score
+        })
+    
+    return {
+        "patients": total_patients,
+        "highRisk": high_risk,
+        "completed": completed_today,
+        "recent": recent_list
+    }
+
 # 2. Patient Management
 @app.post("/api/patients", response_model=PatientOut)
 def create_patient(patient: PatientCreate, db: Session = Depends(get_db), current_user: database.User = Depends(get_current_user)):
@@ -199,78 +236,102 @@ async def diagnose(
     if not patient:
          raise HTTPException(status_code=404, detail="Patient not found")
 
+    # 1. Parse Data Safely
     try:
-        # Parse JSON inputs
-        symptoms_data = json.loads(symptoms)
-        vitals_data = json.loads(vitals)
-        
-        # Build LLM Prompt
-        question = (
-            f"Patient Assessment Request (Patient: {patient.full_name}, Age: {patient.age}):\n"
-            f"Symptoms: {json.dumps(symptoms_data, indent=2)}\n"
-            f"Vital Signs: {json.dumps(vitals_data, indent=2)}\n\n"
-            f"Please analyze these clinical findings"
-        )
-        
-        image_data_url = None
-        file_path_db = None
+        symptoms_data = json.loads(symptoms) if isinstance(symptoms, str) else symptoms
+        vitals_data = json.loads(vitals) if isinstance(vitals, str) else vitals
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.error(f"JSON Parsing Error: {e}")
+        raise HTTPException(status_code=400, detail=f"Invalid JSON format for symptoms or vitals: {str(e)}")
 
-        if file:
-            # Save file locally
+    patient_data = {"age": patient.age, "gender": patient.gender}
+    
+    try:
+        # 2. Engines Import
+        from clinical_engine import engine as clinical_engine
+        from radiology_engine import engine as radiology_engine
+        from fusion_engine import engine as fusion_engine
+        
+        # 3. Clinical Analysis (Mandatory)
+        clinical_analysis = clinical_engine.analyze(symptoms_data, patient_data)
+        logger.info(f"Clinical Analysis Complete: {clinical_analysis['risk_level']}")
+
+        # 4. Radiology Analysis (Optional)
+        radiology_analysis = None
+        file_path_db = None
+        
+        if file and file.filename:
+            logger.info(f"Processing X-ray upload: {file.filename}")
             file_location = os.path.join(UPLOAD_DIR, f"{patient_id}_{int(datetime.now().timestamp())}_{file.filename}")
             with open(file_location, "wb") as buffer:
                 shutil.copyfileobj(file.file, buffer)
-            
-            # Prepare for LLM
-            base64_image = encode_image_to_base64(file_location)
-            mime_type = file.content_type or "image/jpeg"
-            image_data_url = f"data:{mime_type};base64,{base64_image}"
-            
-            question += " and the provided Chest X-ray image."
             file_path_db = file_location
+            
+            # Real Inference on Image
+            radiology_analysis = radiology_engine.analyze(file_location)
+            logger.info(f"Radiology Analysis Complete: {radiology_analysis.get('probability')}")
         else:
-            question += "."
+            logger.info("No X-ray file provided, skipping radiology stream.")
 
-        # Call AI
-        logger.info(f"Running AI Diagnosis for Patient {patient_id}...")
-        ai_response_text = llm.get_response(question, image_data_url)
+        # 5. Multimodal Fusion
+        fusion_result = fusion_engine.fuse(clinical_analysis, radiology_analysis)
+        logger.info(f"Multimodal Fusion Complete. Final Risk: {fusion_result['final_risk_level']}")
         
-        # Simple parsing logic to extract structured fields from AI response (Robustness relies on LLM prompt adherence)
-        # In a production system, we'd use Function Calling or JSON Mode.
-        # Here we default "High" if the word High is in the text, heuristics for demo.
-        risk_level = "Medium" 
-        if "High Risk" in ai_response_text: risk_level = "High"
-        elif "Low Risk" in ai_response_text: risk_level = "Low"
+        # 6. Final Risk Determination
+        final_risk = fusion_result["final_risk_level"]
+        final_prob = fusion_result["final_probability"]
         
-        confidence = 0.85 # Mocked for demo if LLM doesn't output number cleanly
-        
-        # Save to DB
+        # 7. Recommendations (Structured)
+        recommendations = []
+        if final_risk == "High":
+             recommendations = ["URGENT: Isolate Patient", "Order CBNAAT / GeneXpert Test", "Sputum Smear Microscopy", "Contact Tracing Initiation"]
+        elif final_risk == "Medium":
+             recommendations = ["Order Sputum AFB Culture", "Chest X-Ray Repeat in 2 weeks", "Broad-spectrum antibiotics (Non-Quinolone)", "Daily Temperature monitoring"]
+        else:
+             recommendations = ["Symptomatic treatment", "Follow-up in 7 days if symptoms persist", "Routine health education"]
+
+        # 8. Persistence (Save to Database)
+        # We store the most critical info in existing columns
         new_diagnosis = database.Diagnosis(
             patient_id=patient_id,
-            symptoms=symptoms,
-            vitals=vitals,
+            symptoms=json.dumps(symptoms_data),
+            vitals=json.dumps(vitals_data),
             xray_path=file_path_db,
-            risk_level=risk_level,
-            confidence_score=confidence,
-            ai_analysis=ai_response_text,
-            recommendations="Refer to clinical guidelines."
+            risk_level=final_risk,
+            confidence_score=final_prob,
+            ai_analysis=fusion_result["fusion_explanation"],
+            clinical_breakdown=json.dumps({
+                "clinical_path": clinical_analysis,
+                "radiology_path": radiology_analysis,
+                "fusion_details": fusion_result
+            }),
+            recommendations=json.dumps(recommendations)
         )
         db.add(new_diagnosis)
         db.commit()
         db.refresh(new_diagnosis)
         
+        # 9. Return Structured Response
         return {
             "diagnosis_id": new_diagnosis.id,
-            "risk_level": risk_level,
-            "analysis": ai_response_text,
-            "timestamp": new_diagnosis.created_at
+            "clinical_analysis": clinical_analysis,
+            "radiology_analysis": radiology_analysis,
+            "fusion_analysis": fusion_result,
+            "final_risk": {
+                "level": final_risk,
+                "probability": final_prob,
+                "category": final_risk
+            },
+            "confidence_explanation": fusion_result["fusion_explanation"],
+            "recommended_actions": recommendations,
+            "timestamp": datetime.utcnow().isoformat()
         }
 
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid JSON for symptoms/vitals")
     except Exception as e:
-        logger.error(f"Diagnosis error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Diagnosis Pipeline Failure: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Internal Analysis Error: {str(e)}")
 
 # 4. RAG Chat
 @app.post("/api/chat")

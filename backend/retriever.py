@@ -3,6 +3,7 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_qdrant import Qdrant
 from langchain_huggingface import HuggingFaceEmbeddings
 import llm
+import json
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

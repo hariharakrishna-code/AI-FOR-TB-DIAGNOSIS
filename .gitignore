@@ -1,1 +1,25 @@
+# OS files
+.DS_Store
+
+# Environments
+venv/
+.venv/
+env/
 .env
+
+# Node
+node_modules/
+package-lock.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Application Data
+backend/uploads/
+backend/tb_diagnosis.db
+
+# Frontend Build
+dist/
+build/

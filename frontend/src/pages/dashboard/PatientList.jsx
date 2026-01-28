@@ -73,9 +73,9 @@ const PatientList = () => {
                                             <Link to={`/dashboard/diagnose`} state={{ patient: p }} className="text-medical-600 hover:bg-medical-50 p-2 rounded-lg" title="Diagnose">
                                                 <Activity className="h-4 w-4" />
                                             </Link>
-                                            <button className="text-slate-400 hover:text-slate-600 p-2 rounded-lg" title="View Details">
+                                            <Link to={`/dashboard/patients/${p.id}`} className="text-slate-400 hover:text-slate-600 p-2 rounded-lg" title="View Details">
                                                 <Eye className="h-4 w-4" />
-                                            </button>
+                                            </Link>
                                         </td>
                                     </tr>
                                 ))

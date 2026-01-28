@@ -49,6 +49,7 @@ class Diagnosis(Base):
     risk_level = Column(String) # Low, Medium, High
     confidence_score = Column(Float)
     ai_analysis = Column(Text)
+    clinical_breakdown = Column(Text) # JSON string of deterministic analysis
     recommendations = Column(Text)
     
     created_at = Column(DateTime, default=datetime.utcnow)

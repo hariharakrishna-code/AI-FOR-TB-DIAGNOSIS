@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Users, AlertTriangle, CheckCircle, Activity, ArrowRight } from 'lucide-react';
+import { useAuth } from '../../context/AuthContext';
 import api from '../../services/api';
 
 const StatCard = ({ title, value, icon: Icon, color, bg }) => (
@@ -16,17 +17,18 @@ const StatCard = ({ title, value, icon: Icon, color, bg }) => (
 );
 
 const DashboardHome = () => {
+    const { user } = useAuth();
     const [stats, setStats] = useState({ patients: 0, highRisk: 0, completed: 0 });
-    const [recentPatients, setRecentPatients] = useState([]);
+    const [recentDiagnoses, setRecentDiagnoses] = useState([]);
 
     useEffect(() => {
-        // Fetch real stats
         const fetchData = async () => {
             try {
-                const { data } = await api.get('/patients?limit=5');
-                setRecentPatients(data);
-                // Mock stats for demo (or calculate from full list if API supports)
-                setStats({ patients: data.length + 12, highRisk: 3, completed: data.length });
+                const statsRes = await api.get('/stats');
+                setStats(statsRes.data);
+                if (statsRes.data.recent) {
+                    setRecentDiagnoses(statsRes.data.recent);
+                }
             } catch (e) {
                 console.error(e);
             }
@@ -34,11 +36,12 @@ const DashboardHome = () => {
         fetchData();
     }, []);
 
+
     return (
         <div className="space-y-8">
             <div>
                 <h1 className="text-2xl font-bold text-slate-900">Dashboard Overview</h1>
-                <p className="text-slate-500">Welcome back, Dr. Smith</p>
+                <p className="text-slate-500">Welcome back, {user?.full_name || 'Doctor'}</p>
             </div>
 
             {/* Stats Grid */}
@@ -71,26 +74,34 @@ const DashboardHome = () => {
                 <div className="lg:col-span-2 space-y-6">
                     <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
                         <div className="p-6 border-b border-slate-100 flex justify-between items-center">
-                            <h3 className="font-bold text-slate-900">Recent Patients</h3>
-                            <Link to="/dashboard/patients" className="text-medical-600 text-sm font-medium hover:underline">View All</Link>
+                            <h3 className="font-bold text-slate-900">Recent AI Diagnoses</h3>
+                            <Link to="/dashboard/patients" className="text-medical-600 text-sm font-medium hover:underline">View All Patients</Link>
                         </div>
                         <div className="divide-y divide-slate-50">
-                            {recentPatients.length === 0 ? (
-                                <div className="p-8 text-center text-slate-500">No patients found. Add one to get started.</div>
+                            {recentDiagnoses.length === 0 ? (
+                                <div className="p-8 text-center text-slate-500">No diagnoses recorded yet.</div>
                             ) : (
-                                recentPatients.map(p => (
-                                    <div key={p.id} className="p-4 flex items-center justify-between hover:bg-slate-50 transition-colors">
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center font-bold text-slate-500">
-                                                {p.full_name.charAt(0)}
+                                recentDiagnoses.map(d => (
+                                    <div key={d.id} className="p-4 flex items-center justify-between hover:bg-slate-50 transition-colors">
+                                        <div className="flex items-center gap-4">
+                                            <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-xs
+                                                ${d.risk_level === 'High' ? 'bg-red-100 text-red-700' :
+                                                    d.risk_level === 'Medium' ? 'bg-yellow-100 text-yellow-700' :
+                                                        'bg-green-100 text-green-700'}`}>
+                                                {d.risk_level}
                                             </div>
                                             <div>
-                                                <p className="font-medium text-slate-900">{p.full_name}</p>
-                                                <p className="text-xs text-slate-500">ID: #{p.id} • {p.age} yrs • {p.gender}</p>
+                                                <p className="font-medium text-slate-900">{d.patient_name}</p>
+                                                <p className="text-xs text-slate-500">
+                                                    {new Date(d.timestamp).toLocaleDateString()} • Conf: {Math.round(d.confidence * 100)}%
+                                                </p>
                                             </div>
                                         </div>
-                                        <Link to={`/dashboard/patients/${p.id}`} className="p-2 text-slate-400 hover:text-medical-600">
-                                            <ArrowRight className="h-5 w-5" />
+                                        <Link
+                                            to={`/dashboard/patients/${d.patient_id || ''}`}
+                                            className="px-3 py-1.5 text-xs font-medium text-medical-600 bg-medical-50 rounded-lg hover:bg-medical-100"
+                                        >
+                                            View Details
                                         </Link>
                                     </div>
                                 ))
@@ -98,6 +109,7 @@ const DashboardHome = () => {
                         </div>
                     </div>
                 </div>
+
 
                 <div>
                     <div className="bg-gradient-to-br from-medical-500 to-medical-700 rounded-xl p-6 text-white shadow-lg">

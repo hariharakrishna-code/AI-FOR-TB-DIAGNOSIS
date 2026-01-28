@@ -1,6 +1,9 @@
 import os
 import logging
+from dotenv import load_dotenv
+load_dotenv()
 from groq import Groq
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -28,16 +31,25 @@ def get_response(question, image_url=None):
         {
             "role": "system",
             "content": (
-                "You are an AI-Based Tuberculosis (TB) Diagnosis Support System designed for rural healthcare workers. "
-                "Your task is to analyze patient symptoms, vital signs, and Chest X-ray images (if provided). "
-                "Output a structured assessment including:\n"
-                "1. Risk Level (Low/Medium/High)\n"
-                "2. Urgency (Routine/Soon/Immediate)\n"
-                "3. Confidence Score (0-100%)\n"
-                "4. Primary Indicators (Why you think this?)\n"
-                "5. Recommended Action (e.g., Refer to District Hospital, Sputum Test, Home Isolation)\n"
-                "6. Explanation (Simple language for non-specialists).\n\n"
-                "Be conservative and safety-critical. If signs point to TB, lean towards referral."
+                "You are an AI-Based Tuberculosis (TB) Diagnosis Support System designed for clinical decision support. "
+                "Your task is to analyze patient clinical data and optional Chest X-ray images.\n\n"
+                "CRITICAL: Output ONLY a valid JSON object. Do NOT include markdown formatting or extra text.\n\n"
+                "JSON Schema:\n"
+                "{\n"
+                "  \"risk_level\": \"Low\" | \"Medium\" | \"High\",\n"
+                "  \"confidence_score\": float (0.0 to 1.0),\n"
+                "  \"urgency\": \"Routine\" | \"Soon\" | \"Immediate\",\n"
+                "  \"analysis\": \"String with a structured 2-3 sentence overview\",\n"
+                "  \"clinical_findings\": {\n"
+                "    \"symptoms_interpretation\": \"Interpretation of reported symptoms\",\n"
+                "    \"vitals_interpretation\": \"Interpretation of vital signs\",\n"
+                "    \"imaging_interpretation\": \"Interpretation of Chest X-ray (if provided, else 'Not provided')\",\n"
+                "    \"reasoning\": \"Step-by-step clinical reasoning for the assigned risk level\"\n"
+                "  },\n"
+                "  \"recommendations\": [\n"
+                "    \"List of 3-5 specific medical actions or tests\"\n"
+                "  ]\n"
+                "}"
             )
         }
     ]
@@ -58,15 +70,29 @@ def get_response(question, image_url=None):
     try:
         chat_completion = client.chat.completions.create(
             messages=messages,
-            # Using the user's specified model. 
-            # If this fails, consider 'llama-3.2-11b-vision-preview' or 'llama-3.2-90b-vision-preview' for vision tasks.
-            model="meta-llama/llama-4-scout-17b-16e-instruct", 
-            temperature=0.2, # Lower temperature for more consistent medical advice
+            model="llama-3.2-11b-vision-preview", 
+            temperature=0.1, 
+            response_format={"type": "json_object"}
         )
 
-        logger.info("Return from the LLM")
-        return chat_completion.choices[0].message.content
+        raw_content = chat_completion.choices[0].message.content
+        logger.info(f"Raw LLM Response: {raw_content}")
+        return raw_content
 
     except Exception as e:
         logger.error(f"Error calling LLM: {e}")
-        return f"Error generating diagnosis: {str(e)}"
+        # Return a fallback JSON string to prevent crash
+        return json.dumps({
+            "risk_level": "Medium",
+            "confidence_score": 0.5,
+            "urgency": "Soon",
+            "analysis": "AI fallback activated due to service interruption.",
+            "clinical_findings": {
+                "symptoms_interpretation": "Requires manual review.",
+                "vitals_interpretation": "Requires manual review.",
+                "imaging_interpretation": "Not analyzed.",
+                "reasoning": "Standard protocol for system downtime."
+            },
+            "recommendations": ["Consult clinical guidelines manually", "Re-run analysis later"]
+        })
+

@@ -18,12 +18,25 @@ const AddPatient = () => {
         e.preventDefault();
         setLoading(true);
         try {
-            const { data } = await api.post('/patients', formData);
+            // Validate & Transform Payload
+            const payload = {
+                ...formData,
+                age: parseInt(formData.age),
+                contact_number: formData.contact_number.trim() || null,
+                medical_history: formData.medical_history.trim() || null
+            };
+
+            console.log("Submitting Patient Data:", payload);
+
+            const { data } = await api.post('/patients', payload);
+            console.log("Patient Created Successfully:", data);
+
             // Redirect to diagnosis immediately with the new patient ID
             navigate('/dashboard/diagnose', { state: { patient: data } });
         } catch (err) {
-            console.error(err);
-            alert('Failed to add patient');
+            console.error("Patient Creation Error:", err.response?.data || err.message);
+            const errorMessage = err.response?.data?.detail || 'Failed to add patient. Please try again.';
+            alert(`Error: ${typeof errorMessage === 'string' ? errorMessage : JSON.stringify(errorMessage)}`);
         } finally {
             setLoading(false);
         }
