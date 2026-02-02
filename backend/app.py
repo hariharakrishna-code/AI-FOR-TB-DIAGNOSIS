@@ -22,6 +22,7 @@ import retriever
 import upload as knowledge_uploader
 import database
 import auth_utils
+from clinical_logic import calculate_tb_risk
 
 # Configure Logging
 logging.basicConfig(level=logging.INFO)
@@ -213,6 +214,49 @@ def get_patient_history(patient_id: int, db: Session = Depends(get_db), current_
     diagnoses = db.query(database.Diagnosis).filter(database.Diagnosis.patient_id == patient_id).all()
     return diagnoses
 
+@app.get("/api/diagnoses/recent")
+def get_recent_diagnoses(limit: int = 10, db: Session = Depends(get_db), current_user: database.User = Depends(get_current_user)):
+    """
+    Fetches the latest diagnoses for the dashboard comparison view.
+    Parses JSON fields for immediate frontend use.
+    """
+    recent = db.query(database.Diagnosis)\
+               .order_by(database.Diagnosis.created_at.desc())\
+               .limit(limit).all()
+    
+    results = []
+    for d in recent:
+        # Load patient
+        patient = db.query(database.Patient).filter(database.Patient.id == d.patient_id).first()
+        
+        # Safely parse JSON fields
+        try:
+            symptoms = json.loads(d.symptoms) if d.symptoms else {}
+            vitals = json.loads(d.vitals) if d.vitals else {}
+            breakdown = json.loads(d.clinical_breakdown) if d.clinical_breakdown else {}
+        except json.JSONDecodeError:
+            symptoms, vitals, breakdown = {}, {}, {}
+
+        results.append({
+            "id": d.id,
+            "patient": {
+                "full_name": patient.full_name if patient else "Unknown",
+                "age": patient.age if patient else 0,
+                "gender": patient.gender if patient else "N/A",
+                "id": d.patient_id
+            },
+            "risk_level": d.risk_level,
+            "confidence_score": d.confidence_score,
+            "created_at": d.created_at.isoformat(),
+            "has_xray": bool(d.xray_path),
+            "symptoms": symptoms,
+            "vitals": vitals,
+            "clinical_breakdown": breakdown,
+            "ai_analysis": d.ai_analysis
+        })
+    
+    return results
+
 # 3. Diagnosis (Now Secured & Persisted)
 def encode_image_to_base64(file_path):
     with open(file_path, "rb") as image_file:
@@ -228,8 +272,8 @@ async def diagnose(
     current_user: database.User = Depends(get_current_user)
 ):
     """
-    Multimodal diagnosis endpoint using LLM Analysis.
-    Saves the result to the database linked to the patient.
+    Hybrid Clinical Decision Support System diagnosis endpoint.
+    Deterministic scoring + LLM Clinical Explanation.
     """
     # Verify patient exists
     patient = db.query(database.Patient).filter(database.Patient.id == patient_id).first()
@@ -242,96 +286,84 @@ async def diagnose(
         vitals_data = json.loads(vitals) if isinstance(vitals, str) else vitals
     except (json.JSONDecodeError, TypeError) as e:
         logger.error(f"JSON Parsing Error: {e}")
-        raise HTTPException(status_code=400, detail=f"Invalid JSON format for symptoms or vitals: {str(e)}")
+        raise HTTPException(status_code=400, detail="Invalid JSON format for symptoms or vitals")
 
-    patient_data = {"age": patient.age, "gender": patient.gender}
+    # 2. Handle X-Ray (Binary Amplifier for Task 4)
+    xray_present = False
+    file_path_db = None
+    if file and file.filename:
+        logger.info(f"X-ray upload detected: {file.filename}")
+        file_location = os.path.join(UPLOAD_DIR, f"{patient_id}_{int(datetime.now().timestamp())}_{file.filename}")
+        with open(file_location, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+        file_path_db = file_location
+        xray_present = True # Treat as abnormal for score amplification in this CDSS version
+
+    # 3. Deterministic Clinical Scoring (Task 1)
+    assessment = calculate_tb_risk(symptoms_data, vitals_data, xray_present)
     
-    try:
-        # 2. Engines Import
-        from clinical_engine import engine as clinical_engine
-        from radiology_engine import engine as radiology_engine
-        from fusion_engine import engine as fusion_engine
-        
-        # 3. Clinical Analysis (Mandatory)
-        clinical_analysis = clinical_engine.analyze(symptoms_data, patient_data)
-        logger.info(f"Clinical Analysis Complete: {clinical_analysis['risk_level']}")
+    risk_level = assessment["risk_level"]
+    risk_score = assessment["risk_score"]
+    confidence = assessment["confidence"]
+    findings = assessment["findings"]
 
-        # 4. Radiology Analysis (Optional)
-        radiology_analysis = None
-        file_path_db = None
-        
-        if file and file.filename:
-            logger.info(f"Processing X-ray upload: {file.filename}")
-            file_location = os.path.join(UPLOAD_DIR, f"{patient_id}_{int(datetime.now().timestamp())}_{file.filename}")
-            with open(file_location, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
-            file_path_db = file_location
-            
-            # Real Inference on Image
-            radiology_analysis = radiology_engine.analyze(file_location)
-            logger.info(f"Radiology Analysis Complete: {radiology_analysis.get('probability')}")
-        else:
-            logger.info("No X-ray file provided, skipping radiology stream.")
+    # 4. LLM Clinical Explanation (Task 2)
+    # LLM ONLY explains, it does NOT decide.
+    explanation_data = llm.get_clinical_explanation(
+        risk_level=risk_level,
+        risk_score=risk_score,
+        findings=findings,
+        symptoms=symptoms_data,
+        vitals=vitals_data
+    )
 
-        # 5. Multimodal Fusion
-        fusion_result = fusion_engine.fuse(clinical_analysis, radiology_analysis)
-        logger.info(f"Multimodal Fusion Complete. Final Risk: {fusion_result['final_risk_level']}")
-        
-        # 6. Final Risk Determination
-        final_risk = fusion_result["final_risk_level"]
-        final_prob = fusion_result["final_probability"]
-        
-        # 7. Recommendations (Structured)
-        recommendations = []
-        if final_risk == "High":
-             recommendations = ["URGENT: Isolate Patient", "Order CBNAAT / GeneXpert Test", "Sputum Smear Microscopy", "Contact Tracing Initiation"]
-        elif final_risk == "Medium":
-             recommendations = ["Order Sputum AFB Culture", "Chest X-Ray Repeat in 2 weeks", "Broad-spectrum antibiotics (Non-Quinolone)", "Daily Temperature monitoring"]
-        else:
-             recommendations = ["Symptomatic treatment", "Follow-up in 7 days if symptoms persist", "Routine health education"]
+    reasoning = explanation_data.get("reasoning", "Analysis based on standard clinical TB indicators.")
+    recommendations = explanation_data.get("next_steps", ["Consult clinical guidelines"])
 
-        # 8. Persistence (Save to Database)
-        # We store the most critical info in existing columns
-        new_diagnosis = database.Diagnosis(
-            patient_id=patient_id,
-            symptoms=json.dumps(symptoms_data),
-            vitals=json.dumps(vitals_data),
-            xray_path=file_path_db,
-            risk_level=final_risk,
-            confidence_score=final_prob,
-            ai_analysis=fusion_result["fusion_explanation"],
-            clinical_breakdown=json.dumps({
-                "clinical_path": clinical_analysis,
-                "radiology_path": radiology_analysis,
-                "fusion_details": fusion_result
-            }),
-            recommendations=json.dumps(recommendations)
-        )
-        db.add(new_diagnosis)
-        db.commit()
-        db.refresh(new_diagnosis)
-        
-        # 9. Return Structured Response
-        return {
-            "diagnosis_id": new_diagnosis.id,
-            "clinical_analysis": clinical_analysis,
-            "radiology_analysis": radiology_analysis,
-            "fusion_analysis": fusion_result,
-            "final_risk": {
-                "level": final_risk,
-                "probability": final_prob,
-                "category": final_risk
-            },
-            "confidence_explanation": fusion_result["fusion_explanation"],
-            "recommended_actions": recommendations,
-            "timestamp": datetime.utcnow().isoformat()
-        }
+    # 5. Persistence (Save to Database)
+    new_diagnosis = database.Diagnosis(
+        patient_id=patient_id,
+        symptoms=json.dumps(symptoms_data),
+        vitals=json.dumps(vitals_data),
+        xray_path=file_path_db,
+        risk_level=risk_level,
+        confidence_score=confidence / 100.0, # Store as 0.0-1.0
+        ai_analysis=reasoning,
+        clinical_breakdown=json.dumps({
+            "calculated_score": risk_score,
+            "max_score": 13,
+            "findings": findings,
+            "xray_included": xray_present
+        }),
+        recommendations=json.dumps(recommendations)
+    )
+    db.add(new_diagnosis)
+    db.commit()
+    db.refresh(new_diagnosis)
+    
+    # 6. Return Structured Response
+    return {
+        "diagnosis_id": new_diagnosis.id,
+        "final_risk": {
+            "level": risk_level,
+            "score": risk_score,
+            "max_score": 13,
+            "probability": confidence, # Returning as percentage for frontend
+            "category": risk_level
+        },
+        "findings": findings,
+        "clinical_reasoning": reasoning,
+        "recommended_actions": recommendations,
+        "clinical_analysis": {
+            "risk_level": risk_level,
+            "findings": findings
+        },
+        "fusion_analysis": {
+            "fusion_explanation": reasoning
+        },
+        "timestamp": datetime.utcnow().isoformat()
+    }
 
-    except Exception as e:
-        logger.error(f"Diagnosis Pipeline Failure: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
-        raise HTTPException(status_code=500, detail=f"Internal Analysis Error: {str(e)}")
 
 # 4. RAG Chat
 @app.post("/api/chat")
