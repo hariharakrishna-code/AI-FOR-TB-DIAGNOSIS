@@ -9,8 +9,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Constants
-QDRANT_URL = "https://76cd8643-b781-4440-9a70-0ee55ce5d373.eu-west-1-0.aws.cloud.qdrant.io:6333"
-QDRANT_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIiwiZXhwIjoxNzcxODEzMjM5fQ.s9j8nf8Ho3FFeOth_lYSumN8g5iXJ0oZrYR5GJfXAIA"
+QDRANT_URL = "https://ae6c6ba6-9baa-45b8-8628-9d97edb51138.us-east-1-1.aws.cloud.qdrant.io"
+QDRANT_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIn0.jgYS4YKNezLZHuAWqtPBKIK7txbVtfWByKCZAgTXA_s"
 COLLECTION_NAME = "tb_diagnosis_knowledge"
 
 # Embeddings model

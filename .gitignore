@@ -23,3 +23,4 @@ backend/tb_diagnosis.db
 # Frontend Build
 dist/
 build/
+backend/finance-/
